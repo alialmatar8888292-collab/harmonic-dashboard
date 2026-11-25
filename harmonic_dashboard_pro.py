@@ -1,12 +1,12 @@
 """
-Harmonic Multi-TF - Clear & Understandable Pattern Drawing
+Harmonic Multi-TF - Clean Labels Only (no messy lines)
 """
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.signal import argrelextrema
-from datetime import datetime, timedelta
+from datetime import datetime
 import plotly.graph_objects as go
 import requests
 
@@ -74,8 +74,7 @@ def detect_harmonic_patterns(swings, current_price, lookback=18):
     for i in range(len(pts)-3):
         X,A,B,C = pts[i],pts[i+1],pts[i+2],pts[i+3]
         if not (X["type"]!=A["type"] and A["type"]!=B["type"] and B["type"]!=C["type"]): continue
-        XA = abs(A["price"]-X["price"])
-        AB = abs(B["price"]-A["price"])
+        XA = abs(A["price"]-X["price"]); AB = abs(B["price"]-A["price"])
         if XA < 1e-8 or AB < 1e-8: continue
         ab_xa, bc_ab = AB/XA, abs(C["price"]-B["price"])/AB
         for name, rules in PATTERN_DEFS.items():
@@ -123,8 +122,7 @@ def detect_harmonic_patterns(swings, current_price, lookback=18):
     for r in results:
         key = (r["pattern"], r["direction"], round(r["ideal_D"],1))
         if key not in seen:
-            seen.add(key)
-            unique.append(r)
+            seen.add(key); unique.append(r)
     return unique[:4]
 
 def simple_volume_profile(df, bins=20):
@@ -138,117 +136,83 @@ def simple_volume_profile(df, bins=20):
 
 def make_chart(df, ticker, patterns, vp, tf_label=""):
     fig = go.Figure()
-
     fig.add_trace(go.Candlestick(
         x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
         increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
         decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
         line=dict(width=1), whiskerwidth=0.6, name="Price"
     ))
-
     if not patterns:
-        fig.update_layout(height=500, template="plotly_dark", paper_bgcolor="#0B0E14", plot_bgcolor="#0B0E14",
-                          xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+        fig.update_layout(height=500, template="plotly_dark", paper_bgcolor="#0B0E14",
+                          plot_bgcolor="#0B0E14", xaxis_rangeslider_visible=False,
+                          margin=dict(l=8,r=8,t=45,b=8))
         return fig
-
     p = patterns[0]
     color = "#00E676" if p["direction"] == "Bullish" else "#FF5252"
-
-    pts = []
+    points = []
     if p.get("X_time") is not None and p.get("X_price") is not None:
-        pts.append(("X", p["X_time"], p["X_price"]))
+        points.append(("X", p["X_time"], p["X_price"]))
     if p.get("A_time") is not None:
-        pts.append(("A", p["A_time"], p["A_price"]))
+        points.append(("A", p["A_time"], p["A_price"]))
     if p.get("B_time") is not None:
-        pts.append(("B", p["B_time"], p["B_price"]))
+        points.append(("B", p["B_time"], p["B_price"]))
     if p.get("C_time") is not None:
-        pts.append(("C", p["C_time"], p["C_price"]))
-
-    d_time = df.index[-1]
-    pts_with_d = pts + [("D", d_time, p["ideal_D"])]
-
-    if len(pts) >= 2:
-        xs = [t[1] for t in pts]
-        ys = [t[2] for t in pts]
+        points.append(("C", p["C_time"], p["C_price"]))
+    points.append(("D", df.index[-1], p["ideal_D"]))
+    for i, (label, t, price) in enumerate(points):
         fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines",
-            line=dict(color=color, width=3.5),
-            showlegend=False, hoverinfo="skip"
+            x=[t], y=[price],
+            mode="markers+text",
+            marker=dict(
+                size=20 if label == "D" else 15,
+                color=color,
+                symbol="diamond" if label == "D" else "circle",
+                line=dict(width=2.5, color="white")
+            ),
+            text=[label],
+            textposition="top center" if i % 2 == 0 else "bottom center",
+            textfont=dict(size=16, color="white", family="Arial Black"),
+            showlegend=False,
+            hovertemplate=f"<b>{label}</b><br>السعر: {price}<extra></extra>"
         ))
-
-        fig.add_trace(go.Scatter(
-            x=[pts[-1][1], d_time],
-            y=[pts[-1][2], p["ideal_D"]],
-            mode="lines",
-            line=dict(color=color, width=2.5, dash="dash"),
-            showlegend=False, hoverinfo="skip"
-        ))
-
-        for i, (label, t, price) in enumerate(pts_with_d):
-            is_d = (label == "D")
-            fig.add_trace(go.Scatter(
-                x=[t], y=[price],
-                mode="markers+text",
-                marker=dict(
-                    size=18 if is_d else 14,
-                    color=color,
-                    symbol="diamond" if is_d else "circle",
-                    line=dict(width=2.5, color="white")
-                ),
-                text=[label],
-                textposition="top center" if i % 2 == 0 else "bottom center",
-                textfont=dict(size=15, color="white", family="Arial Black"),
-                showlegend=False,
-                hovertemplate=f"<b>{label}</b><br>السعر: {price}<extra></extra>"
-            ))
-
-    fig.add_hline(y=p["ideal_D"], line_dash="solid", line_color=color, line_width=2.5,
-                  annotation_text=f"PRZ {p['ideal_D']}",
-                  annotation_font=dict(size=13, color="white"),
-                  annotation_bgcolor=color)
-
+    fig.add_hline(
+        y=p["ideal_D"], line_color=color, line_width=2.5, line_dash="dash",
+        annotation_text=f"  PRZ {p['ideal_D']}  ",
+        annotation_font=dict(size=13, color="white"),
+        annotation_bgcolor=color
+    )
     if vp.get("poc"):
         fig.add_hline(y=vp["poc"], line_color="#FFD600", line_width=1.5,
                       annotation_text=f"POC {vp['poc']}",
                       annotation_font=dict(size=11, color="#FFD600"))
-
-    all_times = [t[1] for t in pts] + [df.index[-1]]
-    all_prices = [t[2] for t in pts] + [p["ideal_D"], float(df["High"].max()), float(df["Low"].min())]
-    if all_times:
-        t_min = min(all_times)
-        t_max = max(all_times)
-        try:
-            pad = (t_max - t_min) * 0.15 if hasattr(t_max - t_min, "total_seconds") else pd.Timedelta(hours=6)
-            x0 = t_min - pad
-            x1 = t_max + pad
-        except:
-            x0, x1 = t_min, t_max
-        y_min = min(all_prices) * 0.995
-        y_max = max(all_prices) * 1.005
-        fig.update_xaxes(range=[x0, x1])
-        fig.update_yaxes(range=[y_min, y_max])
-
+    times = [pt[1] for pt in points]
+    prices = [pt[2] for pt in points]
+    try:
+        pad = (max(times) - min(times)) * 0.15
+        fig.update_xaxes(range=[min(times) - pad, max(times) + pad])
+        fig.update_yaxes(range=[min(prices) * 0.996, max(prices) * 1.004])
+    except:
+        pass
     fig.update_layout(
         title=dict(
-            text=f"<b>{ticker}</b>  •  {tf_label}  •  {p['pattern']} {p['direction']}  •  اكتمال {p['completion']}%",
-            font=dict(size=15, color="white"), x=0.5
+            text=f"<b>{ticker}</b>  •  {tf_label}  •  {p['pattern']} {p['direction']}  •  {p['completion']}%",
+            font=dict(size=14, color="white"), x=0.5
         ),
-        height=540,
+        height=520,
         template="plotly_dark",
         paper_bgcolor="#0B0E14",
         plot_bgcolor="#0B0E14",
-        margin=dict(l=8, r=8, t=55, b=10),
+        margin=dict(l=6, r=6, t=50, b=6),
         xaxis_rangeslider_visible=False,
         showlegend=False,
-        font=dict(size=11),
-        xaxis=dict(gridcolor="#1a1f2e", showgrid=True),
-        yaxis=dict(gridcolor="#1a1f2e", showgrid=True, side="right")
+        xaxis=dict(gridcolor="#1a1f2e"),
+        yaxis=dict(gridcolor="#1a1f2e", side="right")
     )
     return fig
 
 st.set_page_config(page_title="Harmonic Clear", page_icon="🎯", layout="wide")
 st.title("🎯 Harmonic Multi-Timeframe Scanner")
-st.caption("فحص كل الفواصل + رسم واضح ومفهوم للنموذج")
+st.caption("نقاط X A B C D واضحة بدون خطوط متشابكة + تنبيهات")
 
 with st.sidebar:
     st.header("⚙️ الإعدادات")
@@ -328,7 +292,7 @@ else:
     st.subheader("📋 الإشارات")
     st.dataframe(pd.DataFrame(rows), use_container_width=True, height=340)
 
-    st.subheader("📊 الشارت (رسم واضح)")
+    st.subheader("📊 الشارت (نقاط واضحة فقط)")
     sel = st.selectbox("اختر الرمز", sorted(set(s["ticker"] for s in all_signals)))
     if sel:
         sigs = [s for s in all_signals if s["ticker"]==sel]
@@ -337,16 +301,21 @@ else:
         interval, period = TIMEFRAMES[tf_label]
         df = get_ohlcv(sel, interval, period)
         vp = simple_volume_profile(df.tail(150))
+
+        ymap = {"5m":"5m","15m":"15m","1H":"1h","4H":"1h","Daily":"1d"}
+        yahoo_url = f"https://finance.yahoo.com/chart/{sel}?interval={ymap.get(tf_label,'1d')}"
+        st.link_button(f"📈 فتح شارت Yahoo Finance — {sel}", yahoo_url)
+
         st.plotly_chart(make_chart(df, sel, [best], vp, tf_label), use_container_width=True)
 
-        st.markdown("#### تفاصيل نقاط النموذج")
-        point_rows = []
-        if best.get("X_price"): point_rows.append({"النقطة":"X", "السعر":best["X_price"]})
-        point_rows.append({"النقطة":"A", "السعر":best["A_price"]})
-        point_rows.append({"النقطة":"B", "السعر":best["B_price"]})
-        point_rows.append({"النقطة":"C", "السعر":best["C_price"]})
-        point_rows.append({"النقطة":"D (PRZ)", "السعر":best["ideal_D"]})
-        st.table(pd.DataFrame(point_rows))
+        st.markdown("#### أسعار النقاط")
+        pr = []
+        if best.get("X_price"): pr.append({"النقطة":"X", "السعر":best["X_price"]})
+        pr.append({"النقطة":"A", "السعر":best["A_price"]})
+        pr.append({"النقطة":"B", "السعر":best["B_price"]})
+        pr.append({"النقطة":"C", "السعر":best["C_price"]})
+        pr.append({"النقطة":"D (PRZ)", "السعر":best["ideal_D"]})
+        st.table(pd.DataFrame(pr))
 
         for s in sigs[:3]:
             e = "🟢" if s["direction"]=="Bullish" else "🔴"
