@@ -2,45 +2,42 @@
 Harmonic Patterns Completion Dashboard - PRO Version
 ====================================================
 Features:
-- Stronger multi-pattern detection (Gartley, Bat, Alt-Bat, Butterfly, Crab, Deep Crab, Cypher, Shark, ABCD)
+- Multi-pattern detection (Gartley, Bat, Alt-Bat, Butterfly, Crab, Deep Crab, Cypher, Shark, ABCD)
 - Completion % toward PRZ
-- Simple Volume Profile (POC approximation)
-- Telegram alerts (user provides bot token + chat_id)
+- Volume Profile (POC approximation)
+- Telegram alerts
 - Configurable tickers & filters
-- Auto refresh
-- CSV export
+- Auto refresh + CSV export
 
-Run:
-    pip install streamlit yfinance pandas numpy plotly scipy requests
-    streamlit run harmonic_dashboard_pro.py
+Focus: 5m+ timeframes, near-completed / completed patterns
+Symbols default: Mag7 (ex-GOOGL) + SPY + QQQ + SPCX
 """
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from scipy.signal import find_peaks, argrelextrema
-from datetime import datetime, timedelta
+from scipy.signal import argrelextrema
+from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 import time
-import json
 
 # ====================== DEFAULT CONFIG ======================
-DEFAULT_TICKERS = {
-    "ETFs": ["SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "XLK", "QQQM"],
-    "Mag7_exGOOGL": ["AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA"]
-}
+DEFAULT_TICKERS = [
+    "SPY", "QQQ", "SPCX",
+    "AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA"
+]
 
 TIMEFRAMES = {
-    "15m": ("15m", "5d"),
-    "1H": ("1h", "1mo"),
-    "4H": ("4h", "3mo"),
+    "5m":  ("5m",  "5d"),
+    "15m": ("15m", "10d"),
+    "1H":  ("1h",  "1mo"),
+    "4H":  ("4h",  "3mo"),
     "Daily": ("1d", "1y")
 }
 
-# Scott Carney style ratios with tolerance
 PATTERN_DEFS = {
     "Gartley": {
         "AB_XA": (0.618, 0.06),
@@ -122,7 +119,7 @@ def send_telegram(token: str, chat_id: str, message: str) -> bool:
 
 
 # ====================== DATA & DETECTION ======================
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def get_ohlcv(ticker: str, interval: str, period: str) -> pd.DataFrame:
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True, threads=False)
@@ -137,7 +134,6 @@ def get_ohlcv(ticker: str, interval: str, period: str) -> pd.DataFrame:
 
 
 def detect_swings(df: pd.DataFrame, order: int = 5) -> list:
-    """Return list of dicts: {idx, price, type, time}"""
     if len(df) < order * 3:
         return []
 
@@ -173,19 +169,20 @@ def detect_swings(df: pd.DataFrame, order: int = 5) -> list:
 def ratio_ok(value: float, target) -> bool:
     if isinstance(target[0], (int, float)) and isinstance(target[1], (int, float)):
         if target[0] < 1.0 and target[1] < 1.5:
-            return target[0] * 0.92 <= value <= target[1] * 1.08
+            return target[0] * 0.90 <= value <= target[1] * 1.10
         else:
             return abs(value - target[0]) <= target[1]
     return False
 
 
-def detect_harmonic_patterns(swings: list, current_price: float, lookback: int = 15) -> list:
+def detect_harmonic_patterns(swings: list, current_price: float, lookback: int = 18) -> list:
     if len(swings) < 4:
         return []
 
     pts = swings[-lookback:]
     results = []
 
+    # XABCD
     for i in range(len(pts) - 3):
         X, A, B, C = pts[i], pts[i+1], pts[i+2], pts[i+3]
 
@@ -218,19 +215,16 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
                 ideal_d = X["price"] - XA * ad_target
                 direction = "Bearish"
 
-            move_from_c = abs(ideal_d - C["price"])
-            if move_from_c < 1e-8:
-                continue
             dist_now = abs(current_price - ideal_d)
             progress = 1.0 - (dist_now / (abs(C["price"] - ideal_d) + 1e-8))
             completion = max(0.0, min(100.0, progress * 100))
 
             quality = 55
-            if abs(ab_xa - 0.618) < 0.04:
+            if abs(ab_xa - 0.618) < 0.05:
                 quality += 12
             if 0.382 <= bc_ab <= 0.886:
                 quality += 10
-            if abs(current_price - ideal_d) / XA < 0.03:
+            if abs(current_price - ideal_d) / XA < 0.04:
                 quality += 15
             quality = min(98, quality)
 
@@ -251,6 +245,7 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
                 "prz_dist_pct": round(abs(current_price - ideal_d) / current_price * 100, 2)
             })
 
+    # ABCD
     for i in range(len(pts) - 2):
         A, B, C = pts[i], pts[i+1], pts[i+2]
         if A["type"] == B["type"] or B["type"] == C["type"]:
@@ -299,7 +294,7 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
         if key not in seen:
             seen.add(key)
             unique.append(r)
-    return unique[:6]
+    return unique[:8]
 
 
 def simple_volume_profile(df: pd.DataFrame, bins: int = 24) -> dict:
@@ -364,34 +359,36 @@ def make_chart(df: pd.DataFrame, ticker: str, patterns: list, vp: dict):
 st.set_page_config(page_title="Harmonic PRO Dashboard", page_icon="🎯", layout="wide")
 
 st.title("🎯 Harmonic Patterns Completion Dashboard — PRO")
-st.caption("ETFs + Mag7 (ex-GOOGL) | اكتمال النماذج + Volume Profile + Telegram Alerts")
+st.caption("SPY + QQQ + SPCX + Mag7 (ex-GOOGL) | 5m+ | نماذج مكتملة / شبه مكتملة + تنبيهات تيليجرام")
 
 with st.sidebar:
     st.header("⚙️ الإعدادات")
 
     st.subheader("الرموز")
     custom_tickers = st.text_area(
-        "أضف أو عدّل الرموز (مفصولة بفاصلة)",
-        value=",".join(DEFAULT_TICKERS["ETFs"] + DEFAULT_TICKERS["Mag7_exGOOGL"]),
-        height=80
+        "الرموز (مفصولة بفاصلة)",
+        value=",".join(DEFAULT_TICKERS),
+        height=90
     )
     tickers = [t.strip().upper() for t in custom_tickers.split(",") if t.strip()]
 
-    tf_label = st.selectbox("الإطار الزمني", list(TIMEFRAMES.keys()), index=3)
+    tf_label = st.selectbox("الإطار الزمني", list(TIMEFRAMES.keys()), index=2)  # default 1H
     interval, period = TIMEFRAMES[tf_label]
 
-    min_comp = st.slider("أقل اكتمال %", 0, 100, 45)
+    st.markdown("### فلتر النماذج")
+    min_comp = st.slider("أقل اكتمال % (مكتمل / شبه مكتمل)", 50, 100, 70)
     min_qual = st.slider("أقل جودة", 50, 98, 65)
-    max_prz_dist = st.slider("أقصى بعد عن PRZ %", 0.5, 8.0, 4.0)
+    max_prz_dist = st.slider("أقصى بعد عن PRZ %", 0.3, 6.0, 3.0)
 
     st.markdown("---")
-    st.subheader("🔔 تيليجرام")
+    st.subheader("🔔 تنبيهات تيليجرام")
     tg_token = st.text_input("Bot Token", type="password", help="من @BotFather")
-    tg_chat = st.text_input("Chat ID", help="من @userinfobot أو مجموعة")
-    alert_on_scan = st.checkbox("أرسل تنبيه عند وجود إشارات قوية (≥80% اكتمال)", value=False)
+    tg_chat = st.text_input("Chat ID", help="من @userinfobot")
+    alert_threshold = st.slider("أرسل تنبيه إذا الاكتمال ≥", 70, 100, 80)
+    alert_on_scan = st.checkbox("تفعيل التنبيهات عند المسح", value=True)
 
     st.markdown("---")
-    auto_refresh = st.checkbox("تحديث تلقائي كل 5 دقائق", value=False)
+    auto_refresh = st.checkbox("تحديث تلقائي كل 3 دقائق", value=False)
     if st.button("🔄 مسح الآن", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -399,7 +396,7 @@ with st.sidebar:
 if auto_refresh:
     time.sleep(1)
     st.markdown("""
-    <meta http-equiv="refresh" content="300">
+    <meta http-equiv="refresh" content="180">
     """, unsafe_allow_html=True)
 
 status = st.empty()
@@ -414,10 +411,10 @@ for i, ticker in enumerate(tickers):
         continue
 
     current = float(df["Close"].iloc[-1])
-    order = 4 if interval in ["15m", "1h"] else 3
+    order = 5 if interval in ["5m", "15m"] else 4 if interval == "1h" else 3
     swings = detect_swings(df, order=order)
     patterns = detect_harmonic_patterns(swings, current)
-    vp = simple_volume_profile(df.tail(120))
+    vp = simple_volume_profile(df.tail(150))
 
     for p in patterns:
         if (p["completion"] >= min_comp and
@@ -443,25 +440,28 @@ c3.metric("أقوى جودة", f"{max((s['quality'] for s in all_signals), defau
 c4.metric("الإطار", tf_label)
 c5.metric("آخر تحديث", datetime.now().strftime("%H:%M:%S"))
 
+# Telegram alerts
 if alert_on_scan and tg_token and tg_chat:
-    strong = [s for s in all_signals if s["completion"] >= 80]
+    strong = [s for s in all_signals if s["completion"] >= alert_threshold]
     if strong:
-        msg = f"<b>🎯 Harmonic Alerts ({tf_label})</b>\n\n"
-        for s in strong[:8]:
+        msg = f"<b>🎯 Harmonic Alerts ({tf_label})</b>\n"
+        msg += f"وقت: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        for s in strong[:10]:
             emoji = "🟢" if s["direction"] == "Bullish" else "🔴"
-            msg += (f"{emoji} <b>{s['ticker']}</b> {s['pattern']} {s['direction']}\n"
-                    f"اكتمال: {s['completion']}% | جودة: {s['quality']}\n"
-                    f"PRZ: {s['ideal_D']} | الحالي: {s['current']}\n\n")
+            msg += (f"{emoji} <b>{s['ticker']}</b> | {s['pattern']} {s['direction']}\n"
+                    f"اكتمال: <b>{s['completion']}%</b> | جودة: {s['quality']}\n"
+                    f"PRZ: {s['ideal_D']} | السعر: {s['current']}\n"
+                    f"بعد عن PRZ: {s['prz_dist_pct']}%\n\n")
         ok = send_telegram(tg_token, tg_chat, msg)
         if ok:
-            st.success("تم إرسال التنبيهات إلى تيليجرام")
+            st.success(f"✅ تم إرسال {len(strong)} تنبيه إلى تيليجرام")
         else:
-            st.error("فشل إرسال تيليجرام — تحقق من Token و Chat ID")
+            st.error("❌ فشل إرسال تيليجرام — تحقق من Token و Chat ID")
 
 st.markdown("---")
 
 if not all_signals:
-    st.warning("لا توجد إشارات تستوفي الشروط حالياً. خفّض الفلاتر أو غيّر الإطار الزمني.")
+    st.warning("لا توجد إشارات تستوفي الشروط حالياً. خفّض نسبة الاكتمال أو غيّر الإطار الزمني.")
 else:
     df_show = pd.DataFrame(all_signals)
     cols = ["ticker", "pattern", "direction", "completion", "quality", "ideal_D",
@@ -470,12 +470,8 @@ else:
     df_show.columns = ["الرمز", "النموذج", "الاتجاه", "اكتمال%", "الجودة", "PRZ (D)",
                        "السعر", "بعد%", "POC", "AB/XA", "BC/AB", "وقت C"]
 
-    st.subheader("📋 جدول الإشارات")
-    st.dataframe(
-        df_show,
-        use_container_width=True,
-        height=380
-    )
+    st.subheader("📋 جدول الإشارات (مكتملة / شبه مكتملة)")
+    st.dataframe(df_show, use_container_width=True, height=400)
 
     csv = df_show.to_csv(index=False).encode("utf-8-sig")
     st.download_button("⬇️ تحميل CSV", csv, "harmonic_signals.csv", "text/csv")
@@ -487,7 +483,7 @@ else:
     if sel:
         df = get_ohlcv(sel, interval, period)
         sigs = [s for s in all_signals if s["ticker"] == sel]
-        vp = simple_volume_profile(df.tail(150))
+        vp = simple_volume_profile(df.tail(180))
 
         col_chart, col_info = st.columns([2.2, 1])
         with col_chart:
@@ -507,12 +503,11 @@ else:
                 st.info(f"Volume Profile\nPOC: {vp['poc']}\nVAH: {vp['vah']}\nVAL: {vp['val']}")
 
 st.markdown("---")
-with st.expander("ℹ️ ملاحظات فنية"):
+with st.expander("ℹ️ ملاحظات"):
     st.markdown("""
-    - الكاشف يعتمد على **Swing points** + نسب فيبوناتشي حسب قواعد Scott Carney (مع هامش تسامح).
-    - نسبة الاكتمال تقيس اقتراب السعر الحالي من منطقة الـ PRZ المتوقعة بعد تشكل نقطة C.
-    - Volume Profile هنا تقريبي (POC من توزع الحجم على آخر الشموع).
-    - للدقة المؤسسية يُفضّل دمج مكتبة `HarmonicPatterns` أو `pyharmonics` مع بيانات عالية الجودة (Polygon / Databento).
-    - تيليجرام: أنشئ بوت من @BotFather وضع الـ Token و Chat ID.
+    - البحث يركز على النماذج **المكتملة أو شبه المكتملة** (افتراضي ≥70%).
+    - الأطر الزمنية تبدأ من **5 دقائق**.
+    - الرموز الافتراضية: SPY, QQQ, SPCX + السبع الكبار بدون قوقل.
+    - فعّل التنبيهات وضع Bot Token و Chat ID ليصلك تنبيه عند وجود إشارة قوية.
     - **ليس نصيحة استثمارية**.
     """)
