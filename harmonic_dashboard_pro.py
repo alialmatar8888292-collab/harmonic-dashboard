@@ -145,7 +145,6 @@ def detect_swings(df: pd.DataFrame, order: int = 5) -> list:
     low = df["Low"].values
     times = df.index
 
-    # Peaks and troughs
     peak_idx = argrelextrema(high, np.greater_equal, order=order)[0]
     trough_idx = argrelextrema(low, np.less_equal, order=order)[0]
 
@@ -157,7 +156,6 @@ def detect_swings(df: pd.DataFrame, order: int = 5) -> list:
 
     swings = sorted(swings, key=lambda x: x["idx"])
 
-    # Remove consecutive same type (keep extreme)
     cleaned = []
     for s in swings:
         if not cleaned:
@@ -173,28 +171,24 @@ def detect_swings(df: pd.DataFrame, order: int = 5) -> list:
 
 
 def ratio_ok(value: float, target) -> bool:
-    """target can be (min, max) or (exact, tol)"""
     if isinstance(target[0], (int, float)) and isinstance(target[1], (int, float)):
-        if target[0] < 1.0 and target[1] < 1.5:  # likely range
+        if target[0] < 1.0 and target[1] < 1.5:
             return target[0] * 0.92 <= value <= target[1] * 1.08
-        else:  # exact + tol
+        else:
             return abs(value - target[0]) <= target[1]
     return False
 
 
 def detect_harmonic_patterns(swings: list, current_price: float, lookback: int = 15) -> list:
-    """Return list of pattern dicts with completion %."""
     if len(swings) < 4:
         return []
 
     pts = swings[-lookback:]
     results = []
 
-    # XABCD patterns
     for i in range(len(pts) - 3):
         X, A, B, C = pts[i], pts[i+1], pts[i+2], pts[i+3]
 
-        # Must alternate
         if not (X["type"] != A["type"] and A["type"] != B["type"] and B["type"] != C["type"]):
             continue
 
@@ -216,27 +210,21 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
             if not ratio_ok(bc_ab, rules["BC_AB"]):
                 continue
 
-            # Ideal D from AD/XA
             ad_target = rules["AD_XA"][0]
-            if X["type"] == "L":  # bullish
+            if X["type"] == "L":
                 ideal_d = X["price"] + XA * ad_target
                 direction = "Bullish"
             else:
                 ideal_d = X["price"] - XA * ad_target
                 direction = "Bearish"
 
-            # Also check CD projection roughly
-            cd_target_range = rules.get("CD_BC", (1.0, 3.0))
-            # Completion: how close is current price to ideal D relative to the move from C
             move_from_c = abs(ideal_d - C["price"])
             if move_from_c < 1e-8:
                 continue
             dist_now = abs(current_price - ideal_d)
-            # Progress from C toward D
             progress = 1.0 - (dist_now / (abs(C["price"] - ideal_d) + 1e-8))
             completion = max(0.0, min(100.0, progress * 100))
 
-            # Quality score
             quality = 55
             if abs(ab_xa - 0.618) < 0.04:
                 quality += 12
@@ -263,7 +251,6 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
                 "prz_dist_pct": round(abs(current_price - ideal_d) / current_price * 100, 2)
             })
 
-    # Simple ABCD
     for i in range(len(pts) - 2):
         A, B, C = pts[i], pts[i+1], pts[i+2]
         if A["type"] == B["type"] or B["type"] == C["type"]:
@@ -276,7 +263,6 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
         if not ratio_ok(bc_ab, PATTERN_DEFS["ABCD"]["BC_AB"]):
             continue
 
-        # Ideal D = C + AB (classic AB=CD) or extension
         if A["type"] == "L":
             ideal_d = C["price"] + AB
             direction = "Bullish"
@@ -305,7 +291,6 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
             "prz_dist_pct": round(abs(current_price - ideal_d) / current_price * 100, 2)
         })
 
-    # Deduplicate roughly by pattern + direction + close D
     results = sorted(results, key=lambda x: (-x["completion"], -x["quality"]))
     unique = []
     seen = set()
@@ -318,7 +303,6 @@ def detect_harmonic_patterns(swings: list, current_price: float, lookback: int =
 
 
 def simple_volume_profile(df: pd.DataFrame, bins: int = 24) -> dict:
-    """Approximate POC and value area."""
     if df.empty or "Volume" not in df.columns:
         return {"poc": None, "vah": None, "val": None}
     try:
@@ -327,7 +311,6 @@ def simple_volume_profile(df: pd.DataFrame, bins: int = 24) -> dict:
         hist, edges = np.histogram(prices, bins=bins, weights=vol)
         poc_idx = np.argmax(hist)
         poc = (edges[poc_idx] + edges[poc_idx + 1]) / 2
-        # Simple 70% value area
         total = hist.sum()
         target = total * 0.7
         sorted_idx = np.argsort(hist)[::-1]
@@ -356,11 +339,9 @@ def make_chart(df: pd.DataFrame, ticker: str, patterns: list, vp: dict):
         low=df["Low"], close=df["Close"], name="OHLC"
     ), row=1, col=1)
 
-    # Volume
     colors = ["#26a69a" if c >= o else "#ef5350" for o, c in zip(df["Open"], df["Close"])]
     fig.add_trace(go.Bar(x=df.index, y=df["Volume"], marker_color=colors, name="Vol"), row=2, col=1)
 
-    # PRZ lines
     for p in patterns[:3]:
         color = "#00e676" if p["direction"] == "Bullish" else "#ff1744"
         fig.add_hline(y=p["ideal_D"], line_dash="dot", line_color=color,
@@ -385,11 +366,9 @@ st.set_page_config(page_title="Harmonic PRO Dashboard", page_icon="🎯", layout
 st.title("🎯 Harmonic Patterns Completion Dashboard — PRO")
 st.caption("ETFs + Mag7 (ex-GOOGL) | اكتمال النماذج + Volume Profile + Telegram Alerts")
 
-# ----- Sidebar -----
 with st.sidebar:
     st.header("⚙️ الإعدادات")
 
-    # Tickers
     st.subheader("الرموز")
     custom_tickers = st.text_area(
         "أضف أو عدّل الرموز (مفصولة بفاصلة)",
@@ -417,14 +396,12 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# Auto refresh
 if auto_refresh:
     time.sleep(1)
     st.markdown("""
     <meta http-equiv="refresh" content="300">
     """, unsafe_allow_html=True)
 
-# ----- Scan -----
 status = st.empty()
 progress = st.progress(0)
 all_signals = []
@@ -457,10 +434,8 @@ for i, ticker in enumerate(tickers):
 status.empty()
 progress.empty()
 
-# Sort
 all_signals = sorted(all_signals, key=lambda x: (-x["completion"], -x["quality"]))
 
-# Metrics
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("عدد الإشارات", len(all_signals))
 c2.metric("أعلى اكتمال", f"{max((s['completion'] for s in all_signals), default=0):.0f}%")
@@ -468,7 +443,6 @@ c3.metric("أقوى جودة", f"{max((s['quality'] for s in all_signals), defau
 c4.metric("الإطار", tf_label)
 c5.metric("آخر تحديث", datetime.now().strftime("%H:%M:%S"))
 
-# Telegram alert
 if alert_on_scan and tg_token and tg_chat:
     strong = [s for s in all_signals if s["completion"] >= 80]
     if strong:
@@ -489,7 +463,6 @@ st.markdown("---")
 if not all_signals:
     st.warning("لا توجد إشارات تستوفي الشروط حالياً. خفّض الفلاتر أو غيّر الإطار الزمني.")
 else:
-    # Table
     df_show = pd.DataFrame(all_signals)
     cols = ["ticker", "pattern", "direction", "completion", "quality", "ideal_D",
             "current", "prz_dist_pct", "vp_poc", "ab_xa", "bc_ab", "time_C"]
@@ -499,18 +472,14 @@ else:
 
     st.subheader("📋 جدول الإشارات")
     st.dataframe(
-        df_show.style
-        .background_gradient(subset=["اكتمال%"], cmap="RdYlGn")
-        .format({"اكتمال%": "{:.1f}", "الجودة": "{:.0f}", "بعد%": "{:.2f}"}),
+        df_show,
         use_container_width=True,
         height=380
     )
 
-    # CSV download
     csv = df_show.to_csv(index=False).encode("utf-8-sig")
     st.download_button("⬇️ تحميل CSV", csv, "harmonic_signals.csv", "text/csv")
 
-    # Detail view
     st.subheader("📊 تفاصيل الرمز")
     unique_tickers = sorted(set(s["ticker"] for s in all_signals))
     sel = st.selectbox("اختر الرمز", unique_tickers)
