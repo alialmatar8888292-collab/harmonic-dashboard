@@ -1,6 +1,7 @@
 """
-Harmonic Multi-TF Scanner - Major Patterns Only (No ABCD)
-Focus: Gartley, Bat, AltBat, Butterfly, Crab, DeepCrab, Cypher, Shark
+Harmonic Scanner - Scott Carney Official Patterns
+Patterns: Gartley, Bat, Alt Bat, Butterfly, Crab, Deep Crab, Cypher, Shark, 5-0
+No standalone ABCD
 """
 import streamlit as st
 import yfinance as yf
@@ -17,16 +18,61 @@ TIMEFRAMES = {
     "1H": ("1h", "1mo"), "4H": ("4h", "3mo"), "Daily": ("1d", "1y")
 }
 
-# Major patterns only - NO ABCD
 PATTERN_DEFS = {
-    "Gartley":   {"AB_XA": (0.618, 0.05), "BC_AB": (0.382, 0.886), "AD_XA": (0.786, 0.04)},
-    "Bat":       {"AB_XA": (0.382, 0.50), "BC_AB": (0.382, 0.886), "AD_XA": (0.886, 0.04)},
-    "AltBat":    {"AB_XA": (0.382, 0.05), "BC_AB": (0.382, 0.886), "AD_XA": (1.13, 0.05)},
-    "Butterfly": {"AB_XA": (0.786, 0.05), "BC_AB": (0.382, 0.886), "AD_XA": (1.27, 0.05)},
-    "Crab":      {"AB_XA": (0.382, 0.618),"BC_AB": (0.382, 0.886), "AD_XA": (1.618, 0.04)},
-    "DeepCrab":  {"AB_XA": (0.886, 0.05), "BC_AB": (0.382, 0.886), "AD_XA": (1.618, 0.04)},
-    "Cypher":    {"AB_XA": (0.382, 0.618),"BC_AB": (1.13, 1.414),  "AD_XA": (0.786, 0.05)},
-    "Shark":     {"AB_XA": (0.382, 0.618),"BC_AB": (1.13, 1.618),  "AD_XA": (0.886, 1.13)},
+    "Gartley": {
+        "AB_XA": (0.618, 0.04),
+        "BC_AB": (0.382, 0.886),
+        "AD_XA": (0.786, 0.04),
+        "desc": "Scott Carney Gartley"
+    },
+    "Bat": {
+        "AB_XA": (0.382, 0.50),
+        "BC_AB": (0.382, 0.886),
+        "AD_XA": (0.886, 0.03),
+        "desc": "Scott Carney Bat"
+    },
+    "AltBat": {
+        "AB_XA": (0.382, 0.04),
+        "BC_AB": (0.382, 0.886),
+        "AD_XA": (1.13, 0.04),
+        "desc": "Scott Carney Alternate Bat"
+    },
+    "Butterfly": {
+        "AB_XA": (0.786, 0.04),
+        "BC_AB": (0.382, 0.886),
+        "AD_XA": (1.27, 0.05),
+        "desc": "Scott Carney Butterfly"
+    },
+    "Crab": {
+        "AB_XA": (0.382, 0.618),
+        "BC_AB": (0.382, 0.886),
+        "AD_XA": (1.618, 0.04),
+        "desc": "Scott Carney Crab"
+    },
+    "DeepCrab": {
+        "AB_XA": (0.886, 0.04),
+        "BC_AB": (0.382, 0.886),
+        "AD_XA": (1.618, 0.04),
+        "desc": "Scott Carney Deep Crab"
+    },
+    "Cypher": {
+        "AB_XA": (0.382, 0.618),
+        "BC_AB": (1.13, 1.414),
+        "AD_XA": (0.786, 0.04),
+        "desc": "Scott Carney Cypher"
+    },
+    "Shark": {
+        "AB_XA": (0.382, 0.618),
+        "BC_AB": (1.13, 1.618),
+        "AD_XA": (0.886, 1.13),
+        "desc": "Scott Carney Shark"
+    },
+    "5-0": {
+        "AB_XA": (1.13, 1.618),
+        "BC_AB": (1.618, 2.24),
+        "AD_XA": (0.50, 0.05),
+        "desc": "Scott Carney 5-0"
+    },
 }
 
 def send_telegram(token, chat_id, message):
@@ -65,12 +111,12 @@ def detect_swings(df, order=5):
     return cleaned
 
 def ratio_ok(value, target):
-    lo, hi = target
-    if lo < 1.0 and hi < 1.5:
-        return lo * 0.92 <= value <= hi * 1.08
-    return abs(value - lo) <= hi
+    a, b = target
+    if b > a and b < 3.5 and a < 2.0:
+        return a * 0.93 <= value <= b * 1.07
+    return abs(value - a) <= b
 
-def detect_harmonic_patterns(swings, current_price, lookback=20):
+def detect_harmonic_patterns(swings, current_price, lookback=22):
     if len(swings) < 4: return []
     pts = swings[-lookback:]
     results = []
@@ -83,17 +129,14 @@ def detect_harmonic_patterns(swings, current_price, lookback=20):
         XA = abs(A["price"] - X["price"])
         AB = abs(B["price"] - A["price"])
         BC = abs(C["price"] - B["price"])
-        if XA < 1e-8 or AB < 1e-8:
-            continue
+        if XA < 1e-8 or AB < 1e-8: continue
 
         ab_xa = AB / XA
         bc_ab = BC / AB
 
         for name, rules in PATTERN_DEFS.items():
-            if not ratio_ok(ab_xa, rules["AB_XA"]):
-                continue
-            if not ratio_ok(bc_ab, rules["BC_AB"]):
-                continue
+            if not ratio_ok(ab_xa, rules["AB_XA"]): continue
+            if not ratio_ok(bc_ab, rules["BC_AB"]): continue
 
             ad_target = rules["AD_XA"][0]
             if X["type"] == "L":
@@ -104,11 +147,11 @@ def detect_harmonic_patterns(swings, current_price, lookback=20):
                 direction = "Bearish"
 
             dist = abs(current_price - ideal_d)
-            full_move = abs(C["price"] - ideal_d) + 1e-8
-            completion = max(0.0, min(100.0, (1.0 - dist / full_move) * 100))
+            full = abs(C["price"] - ideal_d) + 1e-8
+            completion = max(0.0, min(100.0, (1.0 - dist / full) * 100))
 
-            quality = 60
-            if abs(ab_xa - 0.618) < 0.04: quality += 10
+            quality = 62
+            if abs(ab_xa - 0.618) < 0.035: quality += 10
             if 0.382 <= bc_ab <= 0.886: quality += 8
             if abs(current_price - ideal_d) / XA < 0.03: quality += 12
             quality = min(98, quality)
@@ -214,9 +257,9 @@ def make_chart(df, ticker, patterns, vp, tf_label=""):
     )
     return fig
 
-st.set_page_config(page_title="Harmonic Major Patterns", page_icon="🎯", layout="wide")
-st.title("🎯 Harmonic Scanner — Major Patterns Only")
-st.caption("Gartley • Bat • Crab • Shark • Butterfly • Cypher  |  بدون ABCD")
+st.set_page_config(page_title="Scott Carney Harmonics", page_icon="🎯", layout="wide")
+st.title("🎯 Scott Carney Harmonic Scanner")
+st.caption("النماذج الرسمية: Gartley • Bat • AltBat • Butterfly • Crab • DeepCrab • Cypher • Shark • 5-0")
 
 with st.sidebar:
     st.header("⚙️ الإعدادات")
@@ -277,7 +320,7 @@ c4.metric("التحديث", datetime.now().strftime("%H:%M"))
 if alert_on and tg_token and tg_chat:
     strong = [s for s in all_signals if s["completion"] >= alert_th]
     if strong:
-        msg = f"<b>🎯 Major Harmonic Alerts</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        msg = f"<b>🎯 Scott Carney Alerts</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         for s in strong[:10]:
             e = "🟢" if s["direction"]=="Bullish" else "🔴"
             msg += f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} {s['direction']}\nاكتمال: <b>{s['completion']}%</b> | PRZ: {s['ideal_D']}\n\n"
@@ -288,12 +331,12 @@ if alert_on and tg_token and tg_chat:
 
 st.markdown("---")
 if not all_signals:
-    st.warning("لا توجد إشارات من النماذج الرئيسية حالياً. خفّض الفلاتر قليلاً.")
+    st.warning("لا توجد إشارات من نماذج سكوت كارني حالياً. خفّض الفلاتر قليلاً.")
 else:
     rows = [{"الرمز":s["ticker"],"الفاصل":s["timeframe"],"النموذج":s["pattern"],
              "الاتجاه":s["direction"],"اكتمال%":s["completion"],"الجودة":s["quality"],
              "PRZ":s["ideal_D"],"السعر":s["current"],"بعد%":s["prz_dist_pct"]} for s in all_signals]
-    st.subheader("📋 الإشارات (نماذج رئيسية فقط)")
+    st.subheader("📋 إشارات سكوت كارني")
     st.dataframe(pd.DataFrame(rows), use_container_width=True, height=360)
 
     st.subheader("📊 الشارت + رسم النموذج")
@@ -312,7 +355,7 @@ else:
 
         st.plotly_chart(make_chart(df, sel, [best], vp, tf_label), use_container_width=True)
 
-        st.markdown("#### نقاط النموذج")
+        st.markdown("#### نقاط النموذج (Scott Carney)")
         pr = []
         if best.get("X_price"): pr.append({"النقطة":"X", "السعر":best["X_price"]})
         pr += [{"النقطة":"A","السعر":best["A_price"]}, {"النقطة":"B","السعر":best["B_price"]},
