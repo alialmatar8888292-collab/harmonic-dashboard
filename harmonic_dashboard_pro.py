@@ -1,180 +1,171 @@
 """
-Harmonic Scanner - Scott Carney Official Patterns
-Patterns: Gartley, Bat, Alt Bat, Butterfly, Crab, Deep Crab, Cypher, Shark, 5-0
-No standalone ABCD
+Harmonic Scanner - Scott Carney (نسخة مصححة)
+الأنماط: Gartley, Bat, AltBat, Butterfly, Crab, DeepCrab, Cypher, 5-0
+(Shark يحتاج نقطة O إضافية، وسيُضاف لاحقاً بمنطق منفصل)
 """
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 from scipy.signal import argrelextrema
 from datetime import datetime
 import plotly.graph_objects as go
-import requests
 
-DEFAULT_TICKERS = ["SPY", "QQQ", "SPCX", "AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA"]
+DEFAULT_TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA", "GOOGL"]
+
+# الفاصل: (interval, period, resample)
 TIMEFRAMES = {
-    "5m": ("5m", "5d"), "15m": ("15m", "10d"),
-    "1H": ("1h", "1mo"), "4H": ("4h", "3mo"), "Daily": ("1d", "1y")
+    "5m": ("5m", "5d", None),
+    "15m": ("15m", "10d", None),
+    "1H": ("1h", "1mo", None),
+    "4H": ("1h", "3mo", "4h"),
+    "Daily": ("1d", "1y", None),
 }
 
-PATTERN_DEFS = {
-    "Gartley": {
-        "AB_XA": (0.618, 0.04),
-        "BC_AB": (0.382, 0.886),
-        "AD_XA": (0.786, 0.04),
-        "desc": "Scott Carney Gartley"
-    },
-    "Bat": {
-        "AB_XA": (0.382, 0.50),
-        "BC_AB": (0.382, 0.886),
-        "AD_XA": (0.886, 0.03),
-        "desc": "Scott Carney Bat"
-    },
-    "AltBat": {
-        "AB_XA": (0.382, 0.04),
-        "BC_AB": (0.382, 0.886),
-        "AD_XA": (1.13, 0.04),
-        "desc": "Scott Carney Alternate Bat"
-    },
-    "Butterfly": {
-        "AB_XA": (0.786, 0.04),
-        "BC_AB": (0.382, 0.886),
-        "AD_XA": (1.27, 0.05),
-        "desc": "Scott Carney Butterfly"
-    },
-    "Crab": {
-        "AB_XA": (0.382, 0.618),
-        "BC_AB": (0.382, 0.886),
-        "AD_XA": (1.618, 0.04),
-        "desc": "Scott Carney Crab"
-    },
-    "DeepCrab": {
-        "AB_XA": (0.886, 0.04),
-        "BC_AB": (0.382, 0.886),
-        "AD_XA": (1.618, 0.04),
-        "desc": "Scott Carney Deep Crab"
-    },
-    "Cypher": {
-        "AB_XA": (0.382, 0.618),
-        "BC_AB": (1.13, 1.414),
-        "AD_XA": (0.786, 0.04),
-        "desc": "Scott Carney Cypher"
-    },
-    "Shark": {
-        "AB_XA": (0.382, 0.618),
-        "BC_AB": (1.13, 1.618),
-        "AD_XA": (0.886, 1.13),
-        "desc": "Scott Carney Shark"
-    },
-    "5-0": {
-        "AB_XA": (1.13, 1.618),
-        "BC_AB": (1.618, 2.24),
-        "AD_XA": (0.50, 0.05),
-        "desc": "Scott Carney 5-0"
-    },
+PATTERNS = {
+    "Gartley":   {"AB_XA": (0.618, 0.618), "BC_AB": (0.382, 0.886), "D": ("A", 0.786)},
+    "Bat":       {"AB_XA": (0.382, 0.50),  "BC_AB": (0.382, 0.886), "D": ("A", 0.886)},
+    "AltBat":    {"AB_XA": (0.382, 0.382), "BC_AB": (0.382, 0.886), "D": ("A", 1.13)},
+    "Butterfly": {"AB_XA": (0.786, 0.786), "BC_AB": (0.382, 0.886), "D": ("A", 1.27)},
+    "Crab":      {"AB_XA": (0.382, 0.618), "BC_AB": (0.382, 0.886), "D": ("A", 1.618)},
+    "DeepCrab":  {"AB_XA": (0.886, 0.886), "BC_AB": (0.382, 0.886), "D": ("A", 1.618)},
+    "Cypher":    {"AB_XA": (0.382, 0.618), "BC_XA": (1.13, 1.414),  "D": ("XC", 0.786), "C_beyond_A": True},
+    "5-0":       {"AB_XA": (1.13, 1.618),  "BC_AB": (1.618, 2.24),  "D": ("BC", 0.50)},
 }
+
+SLACK = 0.03
+
 
 def send_telegram(token, chat_id, message):
-    if not token or not chat_id: return False
+    if not token or not chat_id:
+        return False
     try:
         r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=12)
+                          json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=12)
         return r.status_code == 200
-    except: return False
+    except Exception:
+        return False
+
 
 @st.cache_data(ttl=120, show_spinner=False)
-def get_ohlcv(ticker, interval, period):
+def get_ohlcv(ticker, tf_label):
+    interval, period, rs = TIMEFRAMES[tf_label]
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True, threads=False)
-        if df.empty: return pd.DataFrame()
+        df = yf.download(ticker, period=period, interval=interval, progress=False,
+                         auto_adjust=True, threads=False)
+        if df.empty:
+            return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0] for c in df.columns]
-        return df[["Open","High","Low","Close","Volume"]].dropna()
-    except: return pd.DataFrame()
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        if rs:
+            df = df.resample(rs).agg({"Open": "first", "High": "max", "Low": "min",
+                                      "Close": "last", "Volume": "sum"}).dropna()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 
 def detect_swings(df, order=5):
-    if len(df) < order*3: return []
+    if len(df) < order * 3:
+        return []
     high, low, times = df["High"].values, df["Low"].values, df.index
     peaks = argrelextrema(high, np.greater_equal, order=order)[0]
     troughs = argrelextrema(low, np.less_equal, order=order)[0]
-    swings = [{"idx":int(i),"price":float(high[i]),"type":"H","time":times[i]} for i in peaks]
-    swings += [{"idx":int(i),"price":float(low[i]),"type":"L","time":times[i]} for i in troughs]
-    swings = sorted(swings, key=lambda x: x["idx"])
+    swings = [{"idx": int(i), "price": float(high[i]), "type": "H", "time": times[i]} for i in peaks]
+    swings += [{"idx": int(i), "price": float(low[i]), "type": "L", "time": times[i]} for i in troughs]
+    swings.sort(key=lambda s: s["idx"])
     cleaned = []
     for s in swings:
-        if not cleaned: cleaned.append(s); continue
-        if s["type"] == cleaned[-1]["type"]:
-            if (s["type"]=="H" and s["price"]>cleaned[-1]["price"]) or (s["type"]=="L" and s["price"]<cleaned[-1]["price"]):
+        if not cleaned:
+            cleaned.append(s)
+            continue
+        last = cleaned[-1]
+        if s["type"] == last["type"]:
+            better = (s["type"] == "H" and s["price"] > last["price"]) or \
+                     (s["type"] == "L" and s["price"] < last["price"])
+            if better:
                 cleaned[-1] = s
-        else: cleaned.append(s)
+        else:
+            cleaned.append(s)
     return cleaned
 
-def ratio_ok(value, target):
-    a, b = target
-    if b > a and b < 3.5 and a < 2.0:
-        return a * 0.93 <= value <= b * 1.07
-    return abs(value - a) <= b
 
-def detect_harmonic_patterns(swings, current_price, lookback=22):
-    if len(swings) < 4: return []
+def in_range(v, lo, hi):
+    return lo * (1 - SLACK) <= v <= hi * (1 + SLACK)
+
+
+def detect_patterns(swings, price, lookback=12):
+    if len(swings) < 4:
+        return []
     pts = swings[-lookback:]
     results = []
-
     for i in range(len(pts) - 3):
-        X, A, B, C = pts[i], pts[i+1], pts[i+2], pts[i+3]
-        if not (X["type"] != A["type"] and A["type"] != B["type"] and B["type"] != C["type"]):
+        if i + 3 < len(pts) - 2:
             continue
-
+        X, A, B, C = pts[i], pts[i + 1], pts[i + 2], pts[i + 3]
+        sgn = 1 if A["price"] > X["price"] else -1
         XA = abs(A["price"] - X["price"])
         AB = abs(B["price"] - A["price"])
         BC = abs(C["price"] - B["price"])
-        if XA < 1e-8 or AB < 1e-8: continue
+        if XA < 1e-8 or AB < 1e-8:
+            continue
+        vals = {"AB_XA": AB / XA, "BC_AB": BC / AB, "BC_XA": BC / XA}
 
-        ab_xa = AB / XA
-        bc_ab = BC / AB
+        for name, rules in PATTERNS.items():
+            checks, ok = [], True
+            for key in ("AB_XA", "BC_AB", "BC_XA"):
+                if key in rules:
+                    lo, hi = rules[key]
+                    v = vals[key]
+                    checks.append((key.replace("_", "/"), v, lo, hi))
+                    if not in_range(v, lo, hi):
+                        ok = False
+                        break
+            if not ok:
+                continue
+            if rules.get("C_beyond_A") and sgn * (C["price"] - A["price"]) <= 0:
+                continue
 
-        for name, rules in PATTERN_DEFS.items():
-            if not ratio_ok(ab_xa, rules["AB_XA"]): continue
-            if not ratio_ok(bc_ab, rules["BC_AB"]): continue
-
-            ad_target = rules["AD_XA"][0]
-            if X["type"] == "L":
-                ideal_d = X["price"] + XA * ad_target
-                direction = "Bullish"
+            kind, r = rules["D"]
+            if kind == "A":
+                D = A["price"] - sgn * r * XA
+            elif kind == "XC":
+                D = C["price"] - sgn * r * abs(C["price"] - X["price"])
             else:
-                ideal_d = X["price"] - XA * ad_target
-                direction = "Bearish"
+                D = C["price"] - sgn * r * BC
+            if sgn * (C["price"] - D) <= 0:
+                continue
 
-            dist = abs(current_price - ideal_d)
-            full = abs(C["price"] - ideal_d) + 1e-8
-            completion = max(0.0, min(100.0, (1.0 - dist / full) * 100))
+            band = 0.05 * XA
+            progress = (C["price"] - price) / (C["price"] - D) * 100
+            if progress < 0:
+                continue
+            if sgn * (price - D) < -band:
+                continue
+            progress = min(progress, 100.0)
 
-            quality = 62
-            if abs(ab_xa - 0.618) < 0.035: quality += 10
-            if 0.382 <= bc_ab <= 0.886: quality += 8
-            if abs(current_price - ideal_d) / XA < 0.03: quality += 12
-            quality = min(98, quality)
+            devs = []
+            for _, v, lo, hi in checks:
+                center, half = (lo + hi) / 2, max((hi - lo) / 2, 0.04)
+                devs.append(min(abs(v - center) / half, 1.5))
+            quality = int(max(40, round(100 - 35 * float(np.mean(devs)))))
 
             results.append({
                 "pattern": name,
-                "direction": direction,
-                "X_price": round(X["price"], 2),
-                "A_price": round(A["price"], 2),
-                "B_price": round(B["price"], 2),
-                "C_price": round(C["price"], 2),
-                "ideal_D": round(ideal_d, 2),
-                "current": round(current_price, 2),
-                "X_time": X["time"], "A_time": A["time"],
-                "B_time": B["time"], "C_time": C["time"],
-                "completion": round(completion, 1),
+                "direction": "Bullish" if sgn == 1 else "Bearish",
+                "X": X, "A": A, "B": B, "C": C,
+                "ideal_D": round(D, 2), "band": round(band, 2),
+                "current": round(price, 2),
+                "completion": round(progress, 1),
                 "quality": quality,
-                "ab_xa": round(ab_xa, 3),
-                "bc_ab": round(bc_ab, 3),
-                "prz_dist_pct": round(abs(current_price - ideal_d) / current_price * 100, 2)
+                "checks": checks,
+                "d_ratio": f"{kind}:{r}",
+                "prz_dist_pct": round(abs(price - D) / price * 100, 2),
             })
 
-    results = sorted(results, key=lambda x: (-x["completion"], -x["quality"]))
+    results.sort(key=lambda r: (-r["completion"], -r["quality"]))
     unique, seen = [], set()
     for r in results:
         key = (r["pattern"], r["direction"], round(r["ideal_D"], 1))
@@ -183,185 +174,190 @@ def detect_harmonic_patterns(swings, current_price, lookback=22):
             unique.append(r)
     return unique[:5]
 
-def simple_volume_profile(df, bins=20):
-    if df.empty or "Volume" not in df.columns: return {"poc": None}
-    try:
-        prices = (df["High"] + df["Low"] + df["Close"]) / 3
-        hist, edges = np.histogram(prices, bins=bins, weights=df["Volume"].values)
-        poc = (edges[np.argmax(hist)] + edges[np.argmax(hist)+1]) / 2
-        return {"poc": round(float(poc), 2)}
-    except: return {"poc": None}
 
-def make_chart(df, ticker, patterns, vp, tf_label=""):
+@st.cache_data(ttl=120, show_spinner=False)
+def scan(tickers, tfs):
+    out = []
+    for t in tickers:
+        for tf in tfs:
+            df = get_ohlcv(t, tf)
+            if df.empty or len(df) < 40:
+                continue
+            price = float(df["Close"].iloc[-1])
+            order = 5 if tf in ("5m", "15m") else 4 if tf == "1H" else 3
+            for p in detect_patterns(detect_swings(df, order), price):
+                p["ticker"], p["timeframe"] = t, tf
+                out.append(p)
+    return out
+
+
+def make_chart(df, p, tf_label):
+    n = len(df)
+    xs = list(range(n))
+    fmt = "%Y-%m-%d" if tf_label == "Daily" else "%m-%d %H:%M"
+    labels = [d.strftime(fmt) for d in df.index]
+    color = "#00E676" if p["direction"] == "Bullish" else "#FF5252"
+    X, A, B, C = p["X"], p["A"], p["B"], p["C"]
+    d_x = n - 1 + max(6, n // 25)
+    D = p["ideal_D"]
+    band = p["band"]
+
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
-        x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
-        decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
-        line=dict(width=1), whiskerwidth=0.6
-    ))
-    if not patterns:
-        fig.update_layout(height=500, template="plotly_dark", paper_bgcolor="#0B0E14",
-                          plot_bgcolor="#0B0E14", xaxis_rangeslider_visible=False)
-        return fig
+        x=xs, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], text=labels,
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        increasing_fillcolor="rgba(38,166,154,0.55)", decreasing_fillcolor="rgba(239,83,80,0.55)",
+        line=dict(width=1), showlegend=False))
 
-    p = patterns[0]
-    color = "#00E676" if p["direction"] == "Bullish" else "#FF5252"
-    pts = []
-    if p.get("X_time") is not None: pts.append(("X", p["X_time"], p["X_price"]))
-    if p.get("A_time") is not None: pts.append(("A", p["A_time"], p["A_price"]))
-    if p.get("B_time") is not None: pts.append(("B", p["B_time"], p["B_price"]))
-    if p.get("C_time") is not None: pts.append(("C", p["C_time"], p["C_price"]))
+    legs = [("XA", X, A), ("AB", A, B), ("BC", B, C)]
+    for _, s, e in legs:
+        fig.add_trace(go.Scatter(x=[s["idx"], e["idx"]], y=[s["price"], e["price"]], mode="lines",
+                                 line=dict(color=color, width=1.6), hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=[C["idx"], d_x], y=[C["price"], D], mode="lines",
+                             line=dict(color=color, width=1.6, dash="dash"),
+                             hoverinfo="skip", showlegend=False))
 
-    if len(pts) >= 3:
+    ab_xa = next((c[1] for c in p["checks"] if c[0] == "AB/XA"), None)
+    for txt, s, e in [(f"{ab_xa:.3f}" if ab_xa else "", A, B)]:
+        if txt:
+            fig.add_annotation(x=(s["idx"] + e["idx"]) / 2, y=(s["price"] + e["price"]) / 2,
+                               text=txt, showarrow=False, font=dict(size=11, color="#cfd8dc"),
+                               bgcolor="rgba(11,14,20,0.8)")
+    bc_ab = next((c[1] for c in p["checks"] if c[0] == "BC/AB"), None)
+    if bc_ab:
+        fig.add_annotation(x=(B["idx"] + C["idx"]) / 2, y=(B["price"] + C["price"]) / 2,
+                           text=f"{bc_ab:.3f}", showarrow=False, font=dict(size=11, color="#cfd8dc"),
+                           bgcolor="rgba(11,14,20,0.8)")
+
+    d_type = "L" if p["direction"] == "Bullish" else "H"
+    for lab, x, y, t in [("X", X["idx"], X["price"], X["type"]), ("A", A["idx"], A["price"], A["type"]),
+                         ("B", B["idx"], B["price"], B["type"]), ("C", C["idx"], C["price"], C["type"]),
+                         ("D", d_x, D, d_type)]:
         fig.add_trace(go.Scatter(
-            x=[t[1] for t in pts], y=[t[2] for t in pts], mode="lines",
-            line=dict(color=color, width=3.5), showlegend=False, hoverinfo="skip"
-        ))
-        fig.add_trace(go.Scatter(
-            x=[pts[-1][1], df.index[-1]], y=[pts[-1][2], p["ideal_D"]],
-            mode="lines", line=dict(color=color, width=2.5, dash="dash"), showlegend=False
-        ))
-        for i, (lab, t, pr) in enumerate(pts + [("D", df.index[-1], p["ideal_D"])]):
-            fig.add_trace(go.Scatter(
-                x=[t], y=[pr], mode="markers+text",
-                marker=dict(size=17 if lab=="D" else 13, color=color,
-                            symbol="diamond" if lab=="D" else "circle",
-                            line=dict(width=2.5, color="white")),
-                text=[lab], textposition="top center" if i%2==0 else "bottom center",
-                textfont=dict(size=14, color="white", family="Arial Black"), showlegend=False
-            ))
+            x=[x], y=[y], mode="markers+text", text=[lab],
+            textposition="top center" if t == "H" else "bottom center",
+            marker=dict(size=9, color=color, line=dict(width=1.5, color="white"),
+                        symbol="diamond" if lab == "D" else "circle"),
+            textfont=dict(size=13, color="white"), hoverinfo="skip", showlegend=False))
 
-    fig.add_hline(y=p["ideal_D"], line_color=color, line_width=2.5,
-                  annotation_text=f"{p['pattern']} PRZ {p['ideal_D']}",
-                  annotation_font=dict(size=12, color="white"), annotation_bgcolor=color)
-    if vp.get("poc"):
-        fig.add_hline(y=vp["poc"], line_color="#FFD600", line_width=1.5,
-                      annotation_text=f"POC {vp['poc']}", annotation_font=dict(color="#FFD600"))
+    fig.add_shape(type="rect", x0=C["idx"], x1=d_x + 2, y0=D - band, y1=D + band,
+                  fillcolor=color, opacity=0.18, line=dict(width=0))
+    fig.add_annotation(x=d_x + 2, y=D + band if p["direction"] == "Bearish" else D - band,
+                       text=f"PRZ {D}", showarrow=False, xanchor="right",
+                       yanchor="bottom" if p["direction"] == "Bearish" else "top",
+                       font=dict(size=11, color="white"))
 
-    all_t = [t[1] for t in pts] + [df.index[-1]]
-    all_p = [t[2] for t in pts] + [p["ideal_D"]]
-    if all_t:
-        try:
-            pad = (max(all_t) - min(all_t)) * 0.12
-            fig.update_xaxes(range=[min(all_t)-pad, max(all_t)+pad])
-            fig.update_yaxes(range=[min(all_p)*0.997, max(all_p)*1.003])
-        except: pass
-
-    fig.update_layout(
-        title=dict(text=f"<b>{ticker}</b> • {tf_label} • {p['pattern']} {p['direction']} • {p['completion']}%",
-                   font=dict(size=14, color="white"), x=0.5),
-        height=520, template="plotly_dark", paper_bgcolor="#0B0E14", plot_bgcolor="#0B0E14",
-        margin=dict(l=6, r=6, t=50, b=6), xaxis_rangeslider_visible=False, showlegend=False,
-        xaxis=dict(gridcolor="#1a1f2e"), yaxis=dict(gridcolor="#1a1f2e", side="right")
-    )
+    x0 = max(0, X["idx"] - 3)
+    seg = df.iloc[x0:]
+    ymin = min(float(seg["Low"].min()), D - band)
+    ymax = max(float(seg["High"].max()), D + band)
+    pad = (ymax - ymin) * 0.06
+    step = max(1, (d_x - x0) // 6)
+    tickvals = [i for i in range(x0, n, step)]
+    fig.update_xaxes(range=[x0, d_x + 4], tickvals=tickvals, ticktext=[labels[i] for i in tickvals],
+                     gridcolor="#1a1f2e", rangeslider_visible=False)
+    fig.update_yaxes(range=[ymin - pad, ymax + pad], gridcolor="#1a1f2e", side="right")
+    fig.update_layout(height=480, template="plotly_dark", paper_bgcolor="#0B0E14",
+                      plot_bgcolor="#0B0E14", margin=dict(l=6, r=6, t=10, b=6), showlegend=False)
     return fig
 
-st.set_page_config(page_title="Scott Carney Harmonics", page_icon="🎯", layout="wide")
-st.title("🎯 Scott Carney Harmonic Scanner")
-st.caption("النماذج الرسمية: Gartley • Bat • AltBat • Butterfly • Crab • DeepCrab • Cypher • Shark • 5-0")
 
-with st.sidebar:
-    st.header("⚙️ الإعدادات")
-    custom = st.text_area("الرموز", value=",".join(DEFAULT_TICKERS), height=80)
-    tickers = [t.strip().upper() for t in custom.split(",") if t.strip()]
-    selected_tfs = st.multiselect("الفواصل", list(TIMEFRAMES.keys()), default=list(TIMEFRAMES.keys()))
-    if not selected_tfs: selected_tfs = list(TIMEFRAMES.keys())
-    min_comp = st.slider("أقل اكتمال %", 50, 100, 70)
-    min_qual = st.slider("أقل جودة", 50, 98, 65)
-    max_dist = st.slider("أقصى بعد %", 0.3, 6.0, 3.0)
+def main():
+    st.set_page_config(page_title="Scott Carney Harmonics", page_icon="🎯", layout="wide")
+    st.title("🎯 ماسح نماذج سكوت كارني")
+    st.caption("Gartley • Bat • AltBat • Butterfly • Crab • DeepCrab • Cypher • 5-0")
+
+    with st.sidebar:
+        st.header("⚙️ الإعدادات")
+        custom = st.text_area("الرموز", value=",".join(DEFAULT_TICKERS), height=80)
+        tickers = tuple(t.strip().upper() for t in custom.split(",") if t.strip())
+        tfs = st.multiselect("الفواصل", list(TIMEFRAMES.keys()), default=list(TIMEFRAMES.keys()))
+        tfs = tuple(tfs) if tfs else tuple(TIMEFRAMES.keys())
+        min_comp = st.slider("أقل اكتمال %", 0, 100, 60)
+        min_qual = st.slider("أقل جودة", 40, 100, 65)
+        max_dist = st.slider("أقصى بعد عن D %", 0.3, 6.0, 3.0)
+        st.markdown("---")
+        st.subheader("🔔 تيليجرام")
+        tg_token = st.text_input("Bot Token", type="password")
+        tg_chat = st.text_input("Chat ID")
+        alert_th = st.slider("تنبيه ≥", 70, 100, 80)
+        alert_on = st.checkbox("تفعيل التنبيهات", True)
+        if st.button("🔄 تحديث", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+    with st.spinner("جاري المسح..."):
+        found = scan(tickers, tfs)
+
+    signals = [s for s in found if s["completion"] >= min_comp and s["quality"] >= min_qual
+               and s["prz_dist_pct"] <= max_dist]
+    signals.sort(key=lambda s: (-s["completion"], -s["quality"]))
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("الإشارات", len(signals))
+    c2.metric("أعلى اكتمال", f"{max((s['completion'] for s in signals), default=0):.0f}%")
+    c3.metric("الفواصل", len(tfs))
+    c4.metric("التحديث", datetime.now().strftime("%H:%M"))
+
+    if alert_on and tg_token and tg_chat:
+        sent = st.session_state.setdefault("sent", set())
+        new = []
+        for s in signals:
+            if s["completion"] < alert_th:
+                continue
+            key = (s["ticker"], s["timeframe"], s["pattern"], s["direction"], round(s["ideal_D"], 1))
+            if key not in sent:
+                new.append((key, s))
+        if new:
+            msg = f"<b>🎯 تنبيهات كارني</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+            for _, s in new[:10]:
+                e = "🟢" if s["direction"] == "Bullish" else "🔴"
+                msg += (f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} {s['direction']}\n"
+                        f"اكتمال: <b>{s['completion']}%</b> | D: {s['ideal_D']}\n\n")
+            if send_telegram(tg_token, tg_chat, msg):
+                sent.update(k for k, _ in new)
+                st.success(f"✅ تم إرسال {len(new)} تنبيه")
+            else:
+                st.error("❌ فشل إرسال تيليجرام")
+
     st.markdown("---")
-    st.subheader("🔔 تيليجرام")
-    tg_token = st.text_input("Bot Token", type="password")
-    tg_chat = st.text_input("Chat ID")
-    alert_th = st.slider("تنبيه ≥", 70, 100, 80)
-    alert_on = st.checkbox("تفعيل التنبيهات", True)
-    if st.button("🔄 مسح جميع الفواصل", type="primary", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+    if not signals:
+        st.warning("لا توجد إشارات حالياً. خفّض الفلاتر قليلاً.")
+        return
 
-status = st.empty()
-progress = st.progress(0)
-all_signals = []
-total = max(1, len(tickers) * len(selected_tfs))
-step = 0
+    rows = [{"الرمز": s["ticker"], "الفاصل": s["timeframe"], "النموذج": s["pattern"],
+             "الاتجاه": s["direction"], "اكتمال%": s["completion"], "الجودة": s["quality"],
+             "D": s["ideal_D"], "السعر": s["current"], "بعد%": s["prz_dist_pct"]} for s in signals]
+    st.subheader("📋 الإشارات")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=300)
 
-for ticker in tickers:
-    for tf_label in selected_tfs:
-        step += 1
-        status.info(f"**{ticker}** • **{tf_label}** ({step}/{total})")
-        interval, period = TIMEFRAMES[tf_label]
-        df = get_ohlcv(ticker, interval, period)
-        if df.empty or len(df) < 40:
-            progress.progress(step/total)
-            continue
-        current = float(df["Close"].iloc[-1])
-        order = 5 if tf_label in ["5m","15m"] else 4 if tf_label=="1H" else 3
-        swings = detect_swings(df, order)
-        patterns = detect_harmonic_patterns(swings, current)
-        vp = simple_volume_profile(df.tail(120))
-        for p in patterns:
-            if p["completion"] >= min_comp and p["quality"] >= min_qual and p["prz_dist_pct"] <= max_dist:
-                p["ticker"] = ticker
-                p["timeframe"] = tf_label
-                p["vp_poc"] = vp.get("poc")
-                all_signals.append(p)
-        progress.progress(step/total)
+    st.subheader("📊 الشارت")
+    labels = [f"{s['ticker']} • {s['timeframe']} • {s['pattern']} {s['direction']} • {s['completion']}%"
+              for s in signals]
+    choice = st.selectbox("اختر الإشارة", range(len(signals)), format_func=lambda i: labels[i])
+    s = signals[choice]
+    df = get_ohlcv(s["ticker"], s["timeframe"])
 
-status.empty(); progress.empty()
-all_signals = sorted(all_signals, key=lambda x: (-x["completion"], -x["quality"]))
+    e = "🟢" if s["direction"] == "Bullish" else "🔴"
+    st.markdown(f"### {e} {s['ticker']} • {s['timeframe']} • {s['pattern']} {s['direction']}")
+    st.caption(f"اكتمال {s['completion']}% • جودة {s['quality']} • D عند {s['ideal_D']} • السعر {s['current']}")
+    st.plotly_chart(make_chart(df, s, s["timeframe"]), use_container_width=True)
 
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("الإشارات", len(all_signals))
-c2.metric("أعلى اكتمال", f"{max((s['completion'] for s in all_signals), default=0):.0f}%")
-c3.metric("الفواصل", len(selected_tfs))
-c4.metric("التحديث", datetime.now().strftime("%H:%M"))
+    st.markdown("#### النسب الفعلية مقابل المطلوبة")
+    ratio_rows = [{"النسبة": n, "الفعلية": round(v, 3),
+                   "المطلوب": f"{lo}" if lo == hi else f"{lo} – {hi}",
+                   "مطابقة": "✅" if in_range(v, lo, hi) else "❌"} for n, v, lo, hi in s["checks"]]
+    st.table(pd.DataFrame(ratio_rows))
 
-if alert_on and tg_token and tg_chat:
-    strong = [s for s in all_signals if s["completion"] >= alert_th]
-    if strong:
-        msg = f"<b>🎯 Scott Carney Alerts</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-        for s in strong[:10]:
-            e = "🟢" if s["direction"]=="Bullish" else "🔴"
-            msg += f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} {s['direction']}\nاكتمال: <b>{s['completion']}%</b> | PRZ: {s['ideal_D']}\n\n"
-        if send_telegram(tg_token, tg_chat, msg):
-            st.success(f"✅ تم إرسال {len(strong)} تنبيه")
-        else:
-            st.error("❌ فشل إرسال تيليجرام")
+    st.markdown("#### النقاط")
+    st.table(pd.DataFrame([
+        {"النقطة": "X", "السعر": round(s["X"]["price"], 2)},
+        {"النقطة": "A", "السعر": round(s["A"]["price"], 2)},
+        {"النقطة": "B", "السعر": round(s["B"]["price"], 2)},
+        {"النقطة": "C", "السعر": round(s["C"]["price"], 2)},
+        {"النقطة": "D (متوقعة)", "السعر": s["ideal_D"]},
+    ]))
 
-st.markdown("---")
-if not all_signals:
-    st.warning("لا توجد إشارات من نماذج سكوت كارني حالياً. خفّض الفلاتر قليلاً.")
-else:
-    rows = [{"الرمز":s["ticker"],"الفاصل":s["timeframe"],"النموذج":s["pattern"],
-             "الاتجاه":s["direction"],"اكتمال%":s["completion"],"الجودة":s["quality"],
-             "PRZ":s["ideal_D"],"السعر":s["current"],"بعد%":s["prz_dist_pct"]} for s in all_signals]
-    st.subheader("📋 إشارات سكوت كارني")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=360)
 
-    st.subheader("📊 الشارت + رسم النموذج")
-    sel = st.selectbox("اختر الرمز", sorted(set(s["ticker"] for s in all_signals)))
-    if sel:
-        sigs = [s for s in all_signals if s["ticker"]==sel]
-        best = sigs[0]
-        tf_label = best["timeframe"]
-        interval, period = TIMEFRAMES[tf_label]
-        df = get_ohlcv(sel, interval, period)
-        vp = simple_volume_profile(df.tail(150))
-
-        ymap = {"5m":"5m","15m":"15m","1H":"1h","4H":"1h","Daily":"1d"}
-        yahoo_url = f"https://finance.yahoo.com/chart/{sel}?interval={ymap.get(tf_label,'1d')}"
-        st.markdown(f'<a href="{yahoo_url}" target="_blank" style="display:inline-block;padding:11px 18px;background:#6A1B9A;color:white;text-decoration:none;border-radius:9px;font-weight:bold;margin:6px 0;">📈 فتح شارت Yahoo Finance — {sel}</a>', unsafe_allow_html=True)
-
-        st.plotly_chart(make_chart(df, sel, [best], vp, tf_label), use_container_width=True)
-
-        st.markdown("#### نقاط النموذج (Scott Carney)")
-        pr = []
-        if best.get("X_price"): pr.append({"النقطة":"X", "السعر":best["X_price"]})
-        pr += [{"النقطة":"A","السعر":best["A_price"]}, {"النقطة":"B","السعر":best["B_price"]},
-               {"النقطة":"C","السعر":best["C_price"]}, {"النقطة":"D (PRZ)","السعر":best["ideal_D"]}]
-        st.table(pd.DataFrame(pr))
-
-        for s in sigs[:3]:
-            e = "🟢" if s["direction"]=="Bullish" else "🔴"
-            st.markdown(f"{e} **{s['timeframe']}** | {s['pattern']} {s['direction']} | اكتمال **{s['completion']}%** | PRZ `{s['ideal_D']}`")
+if __name__ == "__main__":
+    main()
