@@ -1,5 +1,7 @@
 """
-Scott Carney Harmonic Scanner - Clear Chart + Arabic Direction
+Scott Carney Harmonic Scanner
+- Arabic direction (صعود/هبوط)
+- Telegram alerts with chart image
 """
 import streamlit as st
 import yfinance as yf
@@ -9,6 +11,9 @@ from scipy.signal import argrelextrema
 from datetime import datetime
 import plotly.graph_objects as go
 import requests
+import io
+import tempfile
+import os
 
 DEFAULT_TICKERS = ["SPY", "QQQ", "SPCX", "AAPL", "MSFT", "AMZN", "NVDA", "META", "TSLA"]
 TIMEFRAMES = {
@@ -31,13 +36,31 @@ PATTERN_DEFS = {
 def dir_ar(direction):
     return "صعود" if direction == "Bullish" else "هبوط"
 
-def send_telegram(token, chat_id, message):
+def send_telegram_text(token, chat_id, message):
     if not token or not chat_id: return False
     try:
-        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=12)
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+            timeout=15
+        )
         return r.status_code == 200
-    except: return False
+    except Exception:
+        return False
+
+def send_telegram_photo(token, chat_id, image_bytes, caption):
+    if not token or not chat_id or not image_bytes:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+            files={"photo": ("chart.png", image_bytes, "image/png")},
+            timeout=30
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
 
 @st.cache_data(ttl=90, show_spinner=False)
 def get_ohlcv(ticker, interval, period):
@@ -47,7 +70,8 @@ def get_ohlcv(ticker, interval, period):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0] for c in df.columns]
         return df[["Open","High","Low","Close","Volume"]].dropna()
-    except: return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 def detect_swings(df, order=4):
     if len(df) < order*3: return []
@@ -128,7 +152,8 @@ def simple_volume_profile(df, bins=20):
         hist, edges = np.histogram(prices, bins=bins, weights=df["Volume"].values)
         poc = (edges[np.argmax(hist)] + edges[np.argmax(hist)+1]) / 2
         return {"poc": round(float(poc), 2)}
-    except: return {"poc": None}
+    except Exception:
+        return {"poc": None}
 
 def make_chart(df, ticker, patterns, vp, tf_label=""):
     fig = go.Figure()
@@ -176,18 +201,15 @@ def make_chart(df, ticker, patterns, vp, tf_label=""):
                             symbol="diamond" if lab == "D" else "circle",
                             line=dict(width=3, color="white")),
                 text=[lab], textposition="top center" if i % 2 == 0 else "bottom center",
-                textfont=dict(size=16, color="white", family="Arial Black"), showlegend=False,
-                hovertemplate=f"<b>{lab}</b><br>السعر: {pr}<extra></extra>"
+                textfont=dict(size=16, color="white", family="Arial Black"), showlegend=False
             ))
 
     fig.add_hline(y=d_price, line_color=color, line_width=3,
                   annotation_text=f"  {p['pattern']} {dir_ar(p['direction'])} PRZ={d_price}  ",
-                  annotation_font=dict(size=14, color="white", family="Arial"),
-                  annotation_bgcolor=color)
+                  annotation_font=dict(size=14, color="white"), annotation_bgcolor=color)
     if vp.get("poc"):
         fig.add_hline(y=vp["poc"], line_color="#FFD600", line_width=2,
-                      annotation_text=f"POC {vp['poc']}",
-                      annotation_font=dict(size=12, color="#FFD600"))
+                      annotation_text=f"POC {vp['poc']}", annotation_font=dict(size=12, color="#FFD600"))
 
     if pts:
         times = [t[1] for t in pts] + [d_time]
@@ -204,19 +226,33 @@ def make_chart(df, ticker, patterns, vp, tf_label=""):
 
     fig.update_layout(
         title=dict(
-            text=f"<b>{ticker}</b>  |  {tf_label}  |  {p['pattern']} {dir_ar(p['direction'])}  |  اكتمال {p['completion']}%",
+            text=f"<b>{ticker}</b> | {tf_label} | {p['pattern']} {dir_ar(p['direction'])} | {p['completion']}%",
             font=dict(size=15, color="white"), x=0.5
         ),
         height=560, template="plotly_dark", paper_bgcolor="#0B0E14", plot_bgcolor="#0B0E14",
         margin=dict(l=8, r=8, t=55, b=10), xaxis_rangeslider_visible=False, showlegend=False,
-        xaxis=dict(gridcolor="#1a1f2e", showgrid=True),
-        yaxis=dict(gridcolor="#1a1f2e", showgrid=True, side="right"), font=dict(size=12)
+        xaxis=dict(gridcolor="#1a1f2e"), yaxis=dict(gridcolor="#1a1f2e", side="right")
     )
     return fig
 
+def fig_to_png_bytes(fig):
+    try:
+        return fig.to_image(format="png", width=900, height=560, scale=2)
+    except Exception:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                path = tmp.name
+            fig.write_image(path, width=900, height=560, scale=2)
+            with open(path, "rb") as f:
+                data = f.read()
+            os.unlink(path)
+            return data
+        except Exception:
+            return None
+
 st.set_page_config(page_title="Scott Carney Clear", page_icon="🎯", layout="wide")
 st.title("🎯 Scott Carney Harmonic Scanner")
-st.caption("كل نموذج مع عبارة صعود أو هبوط")
+st.caption("صعود / هبوط + تنبيهات تيليجرام مع صورة الشارت")
 
 with st.sidebar:
     st.header("⚙️ الإعدادات")
@@ -240,6 +276,7 @@ with st.sidebar:
     tg_chat = st.text_input("Chat ID", value=default_chat)
     alert_th = st.slider("تنبيه ≥", 50, 100, 70)
     alert_on = st.checkbox("تفعيل التنبيهات", True)
+    send_chart_img = st.checkbox("إرسال صورة الشارت مع التنبيه", True)
     if st.button("🔄 مسح الآن", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -285,14 +322,39 @@ c4.metric("التحديث", datetime.now().strftime("%H:%M"))
 if alert_on and tg_token and tg_chat:
     strong = [s for s in all_signals if s["completion"] >= alert_th]
     if strong:
-        msg = f"<b>🎯 تنبيهات هارمونيك</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-        for s in strong[:10]:
+        summary = f"<b>🎯 تنبيهات هارمونيك</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        for s in strong[:8]:
             e = "🟢" if s["direction"] == "Bullish" else "🔴"
-            msg += f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} <b>{dir_ar(s['direction'])}</b>\nاكتمال: <b>{s['completion']}%</b> | PRZ: {s['ideal_D']}\n\n"
-        if send_telegram(tg_token, tg_chat, msg):
-            st.success(f"✅ تم إرسال {len(strong)} تنبيه")
+            summary += f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} <b>{dir_ar(s['direction'])}</b>\nاكتمال: <b>{s['completion']}%</b> | PRZ: {s['ideal_D']}\n\n"
+        send_telegram_text(tg_token, tg_chat, summary)
+
+        sent_photos = 0
+        if send_chart_img:
+            for s in strong[:3]:
+                try:
+                    interval, period = TIMEFRAMES[s["timeframe"]]
+                    df = get_ohlcv(s["ticker"], interval, period)
+                    if df.empty:
+                        continue
+                    vp = simple_volume_profile(df.tail(150))
+                    fig = make_chart(df, s["ticker"], [s], vp, s["timeframe"])
+                    img = fig_to_png_bytes(fig)
+                    caption = (
+                        f"{'🟢' if s['direction']=='Bullish' else '🔴'} "
+                        f"<b>{s['ticker']}</b> | {s['timeframe']} | {s['pattern']} {dir_ar(s['direction'])}\n"
+                        f"اكتمال: {s['completion']}% | PRZ: {s['ideal_D']} | السعر: {s['current']}"
+                    )
+                    if img and send_telegram_photo(tg_token, tg_chat, img, caption):
+                        sent_photos += 1
+                except Exception:
+                    pass
+
+        if sent_photos:
+            st.success(f"✅ تم إرسال الملخص + {sent_photos} صورة شارت على تيليجرام")
         else:
-            st.error("❌ فشل إرسال تيليجرام")
+            st.success(f"✅ تم إرسال {len(strong)} تنبيه نصي على تيليجرام")
+            if send_chart_img:
+                st.info("ملاحظة: صور الشارت تحتاج kaleido. إذا ما وصلت، انتظر إعادة بناء التطبيق.")
 
 st.markdown("---")
 
@@ -300,15 +362,9 @@ if not all_signals:
     st.warning("لا توجد إشارات حالياً. خفّض الفلاتر أو غيّر الفواصل إلى 1H / 4H / Daily.")
 else:
     rows = [{
-        "الرمز": s["ticker"],
-        "الفاصل": s["timeframe"],
-        "النموذج": s["pattern"],
-        "الاتجاه": dir_ar(s["direction"]),
-        "اكتمال%": s["completion"],
-        "الجودة": s["quality"],
-        "PRZ": s["ideal_D"],
-        "السعر": s["current"],
-        "بعد%": s["prz_dist_pct"]
+        "الرمز": s["ticker"], "الفاصل": s["timeframe"], "النموذج": s["pattern"],
+        "الاتجاه": dir_ar(s["direction"]), "اكتمال%": s["completion"], "الجودة": s["quality"],
+        "PRZ": s["ideal_D"], "السعر": s["current"], "بعد%": s["prz_dist_pct"]
     } for s in all_signals]
     st.subheader("📋 الإشارات")
     st.dataframe(pd.DataFrame(rows), use_container_width=True, height=340)
@@ -334,20 +390,21 @@ else:
 
         st.plotly_chart(make_chart(df, sel, [best], vp, tf_label), use_container_width=True)
 
-        st.markdown("#### نقاط النموذج (مرتبة)")
+        st.markdown("#### نقاط النموذج")
         point_data = []
         if best.get("X_price") is not None:
             point_data.append({"النقطة": "X", "السعر": best["X_price"]})
-        point_data.append({"النقطة": "A", "السعر": best["A_price"]})
-        point_data.append({"النقطة": "B", "السعر": best["B_price"]})
-        point_data.append({"النقطة": "C", "السعر": best["C_price"]})
-        point_data.append({"النقطة": "D (PRZ)", "السعر": best["ideal_D"]})
+        point_data += [
+            {"النقطة": "A", "السعر": best["A_price"]},
+            {"النقطة": "B", "السعر": best["B_price"]},
+            {"النقطة": "C", "السعر": best["C_price"]},
+            {"النقطة": "D (PRZ)", "السعر": best["ideal_D"]},
+        ]
         st.table(pd.DataFrame(point_data))
 
-        st.markdown("#### باقي الإشارات على نفس الرمز")
         for s in sigs[:4]:
             e = "🟢 صعود" if s["direction"] == "Bullish" else "🔴 هبوط"
             st.markdown(
                 f"**{e}** | **{s['timeframe']}** | {s['pattern']} | "
-                f"اكتمال **{s['completion']}%** | PRZ `{s['ideal_D']}` | بعد {s['prz_dist_pct']}%"
+                f"اكتمال **{s['completion']}%** | PRZ `{s['ideal_D']}`"
             )
