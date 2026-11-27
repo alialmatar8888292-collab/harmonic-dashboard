@@ -1,5 +1,5 @@
 """
-Scott Carney Harmonic Scanner - Clear Chart Focus
+Scott Carney Harmonic Scanner - Clear Chart + Arabic Direction
 """
 import streamlit as st
 import yfinance as yf
@@ -27,6 +27,9 @@ PATTERN_DEFS = {
     "Shark":     {"AB_XA": (0.35, 0.65), "BC_AB": (1.05, 1.70), "AD_XA": (0.85, 1.20)},
     "5-0":       {"AB_XA": (1.05, 1.70), "BC_AB": (1.50, 2.40), "AD_XA": (0.45, 0.55)},
 }
+
+def dir_ar(direction):
+    return "صعود" if direction == "Bullish" else "هبوط"
 
 def send_telegram(token, chat_id, message):
     if not token or not chat_id: return False
@@ -178,7 +181,7 @@ def make_chart(df, ticker, patterns, vp, tf_label=""):
             ))
 
     fig.add_hline(y=d_price, line_color=color, line_width=3,
-                  annotation_text=f"  {p['pattern']} PRZ = {d_price}  ",
+                  annotation_text=f"  {p['pattern']} {dir_ar(p['direction'])} PRZ={d_price}  ",
                   annotation_font=dict(size=14, color="white", family="Arial"),
                   annotation_bgcolor=color)
     if vp.get("poc"):
@@ -201,7 +204,7 @@ def make_chart(df, ticker, patterns, vp, tf_label=""):
 
     fig.update_layout(
         title=dict(
-            text=f"<b>{ticker}</b>  |  {tf_label}  |  {p['pattern']} {p['direction']}  |  اكتمال {p['completion']}%",
+            text=f"<b>{ticker}</b>  |  {tf_label}  |  {p['pattern']} {dir_ar(p['direction'])}  |  اكتمال {p['completion']}%",
             font=dict(size=15, color="white"), x=0.5
         ),
         height=560, template="plotly_dark", paper_bgcolor="#0B0E14", plot_bgcolor="#0B0E14",
@@ -213,7 +216,7 @@ def make_chart(df, ticker, patterns, vp, tf_label=""):
 
 st.set_page_config(page_title="Scott Carney Clear", page_icon="🎯", layout="wide")
 st.title("🎯 Scott Carney Harmonic Scanner")
-st.caption("رسم واضح للنموذج + جدول النقاط")
+st.caption("كل نموذج مع عبارة صعود أو هبوط")
 
 with st.sidebar:
     st.header("⚙️ الإعدادات")
@@ -282,10 +285,10 @@ c4.metric("التحديث", datetime.now().strftime("%H:%M"))
 if alert_on and tg_token and tg_chat:
     strong = [s for s in all_signals if s["completion"] >= alert_th]
     if strong:
-        msg = f"<b>🎯 Scott Carney Alerts</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        msg = f"<b>🎯 تنبيهات هارمونيك</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         for s in strong[:10]:
             e = "🟢" if s["direction"] == "Bullish" else "🔴"
-            msg += f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} {s['direction']}\nاكتمال: <b>{s['completion']}%</b> | PRZ: {s['ideal_D']}\n\n"
+            msg += f"{e} <b>{s['ticker']}</b> [{s['timeframe']}] {s['pattern']} <b>{dir_ar(s['direction'])}</b>\nاكتمال: <b>{s['completion']}%</b> | PRZ: {s['ideal_D']}\n\n"
         if send_telegram(tg_token, tg_chat, msg):
             st.success(f"✅ تم إرسال {len(strong)} تنبيه")
         else:
@@ -297,9 +300,15 @@ if not all_signals:
     st.warning("لا توجد إشارات حالياً. خفّض الفلاتر أو غيّر الفواصل إلى 1H / 4H / Daily.")
 else:
     rows = [{
-        "الرمز": s["ticker"], "الفاصل": s["timeframe"], "النموذج": s["pattern"],
-        "الاتجاه": s["direction"], "اكتمال%": s["completion"], "الجودة": s["quality"],
-        "PRZ": s["ideal_D"], "السعر": s["current"], "بعد%": s["prz_dist_pct"]
+        "الرمز": s["ticker"],
+        "الفاصل": s["timeframe"],
+        "النموذج": s["pattern"],
+        "الاتجاه": dir_ar(s["direction"]),
+        "اكتمال%": s["completion"],
+        "الجودة": s["quality"],
+        "PRZ": s["ideal_D"],
+        "السعر": s["current"],
+        "بعد%": s["prz_dist_pct"]
     } for s in all_signals]
     st.subheader("📋 الإشارات")
     st.dataframe(pd.DataFrame(rows), use_container_width=True, height=340)
@@ -337,8 +346,8 @@ else:
 
         st.markdown("#### باقي الإشارات على نفس الرمز")
         for s in sigs[:4]:
-            e = "🟢" if s["direction"] == "Bullish" else "🔴"
+            e = "🟢 صعود" if s["direction"] == "Bullish" else "🔴 هبوط"
             st.markdown(
-                f"{e} **{s['timeframe']}** | {s['pattern']} {s['direction']} | "
+                f"**{e}** | **{s['timeframe']}** | {s['pattern']} | "
                 f"اكتمال **{s['completion']}%** | PRZ `{s['ideal_D']}` | بعد {s['prz_dist_pct']}%"
             )
